@@ -1,0 +1,16 @@
+name = Drupal commerce registration waitlist
+core = 7.x
+package = Features
+php = 5.2.4
+dependencies[] = flag
+dependencies[] = list
+dependencies[] = registration
+dependencies[] = rules
+dependencies[] = views
+dependencies[] = views_send
+features[ctools][] = views:views_default:3.0
+features[features_api][] = api:1
+features[field][] = flagging-waitlist-field_flag_status
+features[flag][] = waitlist
+features[rules_config][] = rules_dc_registration_waitlist_send_email
+features[views_view][] = dc_registration_waitlist

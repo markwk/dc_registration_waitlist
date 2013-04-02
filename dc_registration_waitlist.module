@@ -1,0 +1,278 @@
+<?php
+/**
+ * @file
+ * Code for the Drupal commerce registration waitlist feature.
+ */
+
+include_once 'dc_registration_waitlist.features.inc';
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Adding the "Add to waitlist" link to the "Add to cart" form if the product is
+ * out of stock.
+ */
+function dc_registration_waitlist_form_alter(&$form, &$form_state, $form_id) {
+  // Ignore the form unless its ID starts with "commerce_cart_add_to_cart_form".
+  if (substr($form_id, 0, 30) != 'commerce_cart_add_to_cart_form') {
+    return;
+  }
+
+  // Get the product entity.
+  if (empty($form['product_id']['#value'])) {
+    return;
+  }
+  $product_id = $form['product_id']['#value'];
+  $wrapper = entity_metadata_wrapper('commerce_product', $product_id);
+
+  // Return if there's no stock field on the product.
+  if (registration_has_room('commerce_product',$product_id,1)) {
+    return;
+  }
+  // If the product is out of stock, disable the "Add to cart" button and add
+  // an "Add to waitlist" link.
+  else {
+    $form['waitlist'] = array(
+      '#markup' => '<br />'.dc_registration_waitlist_get_link($product_id),
+    );
+  }
+}
+
+
+
+/**
+ * Retrieve a link for adding/removing a product to the waitlist.
+ *
+ * @param int $product_id
+ *   The product for which to issue the link.
+ *
+ * @return string
+ *   The link HTML.
+ */
+function dc_registration_waitlist_get_link($product_id) {
+  return flag_create_link('waitlist', $product_id);
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function dc_registration_waitlist_menu() {
+  // custom page that will automatically create an order for the provided product
+  $items['dc-registration-waitlist/addtocart/%'] = array(
+    'title' => 'Add to cart',
+    'page callback' => '_dc_registration_waitlist_addtocart',
+    'page arguments' => array(2),
+    'access callback' => '_dc_registration_waitlist_addtocart_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['node/%node/waitlist'] = array(
+    'title' => 'Waitlist',
+    'page callback' => '_dc_registration_waitlist_manage',
+    'page arguments' => array(1),
+    'access callback' => '_dc_registration_waitlist_manage_access',
+    'access arguments'  => array(1),
+    'type' => MENU_LOCAL_TASK,
+  );  return $items;
+}
+
+
+
+function _dc_registration_waitlist_manage($node){
+  drupal_goto('dc-registration-waitlist/'.$node->field_product_event['und'][0]['product_id']);
+}
+
+
+function _dc_registration_waitlist_manage_access($node){
+
+  if(!user_access('manage waitlist')){
+    return FALSE;
+  }
+
+  if($node->type!='panopoly_event'){
+    return FALSE;
+  }
+
+  $flags_count =flag_get_counts('commerce_product', $node->field_product_event['und'][0]['product_id']);
+  if (empty($flags_count['waitlist'])){
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+
+
+
+
+
+function _dc_registration_waitlist_addtocart_access(){
+  $uid = $GLOBALS['user']->uid;
+  // need registered useres
+  if($GLOBALS['user']->uid==0){
+    drupal_set_message(t('Please login first'));
+    return FALSE;
+  }
+  $flags = flag_get_user_flags('commerce_product', arg(2), $uid);
+  if($flags){
+    $flagging = flagging_load($flags['waitlist']->flagging_id);
+    // flag status is set to promoted
+    if($flagging->field_flag_status['und'][0]['value']==1) {
+      return TRUE;
+    } else {
+      drupal_set_message(t('You have not been promoted off the waitlist yet'));
+      return FALSE;
+    }
+  }
+}
+
+
+/*
+ * hook_menu callback
+ *
+ * creates the order and redirects to checkout
+ *
+ */
+function _dc_registration_waitlist_addtocart($product_id){
+
+  global $user;
+
+  // if there are no slots available, do not create the order
+  if(!registration_has_room('commerce_product',$product_id,1)){
+    drupal_set_message(t('Sorry! There are no spots available.'));
+    drupal_goto('<front>');
+  }
+
+  // Create the new order in checkout; you might also check first to
+  // see if your user already has an order to use instead of a new one.
+  $order = commerce_order_new($user->uid, 'checkout_checkout');
+
+  // Save the order to get its ID.
+  commerce_order_save($order);
+
+  // Load whatever product represents the item the customer will be
+  // paying for and create a line item for it.
+  $product = commerce_product_load($product_id);
+  $line_item = commerce_product_line_item_new($product, 1, $order->order_id);
+
+  // Save the line item to get its ID.
+  commerce_line_item_save($line_item);
+
+  // Add the line item to the order using fago's rockin' wrapper.
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $order_wrapper->commerce_line_items[] = $line_item;
+
+  // Save the order again to update its line item reference field.
+  commerce_order_save($order);
+
+  drupal_set_message(t('Product %product-name has been added to your cart.',array('%product-name'=>$product->title)));
+
+  // Redirect to the order's checkout form. Obviously, if this were a
+  // form submit handler, you'd just set $form_state['redirect'].
+  drupal_goto('checkout/' . $order->order_id);
+}
+
+
+
+/**
+ * Implements hook_action_info().
+ */
+function dc_registration_waitlist_action_info() {
+  return array(
+    '_dc_registration_waitlist_change_user_flag_and_email' => array(
+      'type' => 'user',
+      'label' => t('Promote & message'),
+      'configurable' => FALSE,
+    ),
+    '_dc_registration_waitlist_change_user_flag' => array(
+      'type' => 'user',
+      'label' => t('Promote'),
+      'configurable' => FALSE,
+    ),
+    '_dc_registration_waitlist_reset_user_flag' => array(
+      'type' => 'user',
+      'label' => t('Reset to pending'),
+      'configurable' => FALSE,
+    ),
+    '_dc_registration_waitlist_remove_flag' => array(
+      'type' => 'user',
+      'label' => t('Remove'),
+      'configurable' => FALSE,
+    ),
+  );
+}
+
+
+/*
+ * action definition
+ * set flag status to promoted & message
+ */
+function _dc_registration_waitlist_change_user_flag_and_email(&$user, $context = array()){
+  _dc_registration_waitlist_save_flag($user,1);
+  // invoke rules component to send email
+  rules_invoke_component('rules_dc_registration_waitlist_send_email',$user,commerce_product_load(arg(1)));
+}
+
+
+/*
+ * action definition
+ * set flag status to promoted
+ */
+function _dc_registration_waitlist_change_user_flag(&$user, $context = array()){
+  _dc_registration_waitlist_save_flag($user,1);
+}
+
+
+/*
+ * action definition
+ * set flag status to pending
+ */
+function _dc_registration_waitlist_reset_user_flag(&$user, $context = array()){
+  _dc_registration_waitlist_save_flag($user,0);
+}
+
+
+/*
+ * action definition
+ * remove this flag
+ */
+function _dc_registration_waitlist_remove_flag(&$user, $context = array()){
+  flag('unflag', 'waitlist', arg(1), $user);
+}
+
+/*
+ * update the flag entity
+ * set the status field to $status
+ */
+function   _dc_registration_waitlist_save_flag($user,$status){
+  $params = array(
+    'entity_type' =>'commerce_product',
+    'entity_id'   => arg(1),
+    'uid'         => $user->uid,
+    );
+
+  // get the user's flags
+  $user_flags = flag_get_user_flags($params['entity_type'], $params['entity_id'], $params['uid']);
+
+  $flagging_id = $user_flags['waitlist']->flagging_id;
+  // load the flagging entity
+  $flagging = flagging_load($flagging_id);
+  $flagging->field_flag_status['und'][0]['value']=$status;
+  //save flagging
+  $flagging = flagging_save($flagging);
+}
+
+
+/**
+ * Implements hook_permission().
+ */
+function dc_registration_waitlist_permission() {
+  return array(
+    'manage waitlist' =>  array(
+      'title' => t('Manage the waitlist'),
+      'description' => t('Manages the users waitlist for products'),
+    ),
+  );
+}
+
+
